@@ -1,9 +1,6 @@
-# telegram_notify.py
 import aiohttp, asyncio, logging
 import config as cfg
-
 log = logging.getLogger(__name__)
-
 class TelegramNotifier:
     def __init__(self, token: str, chat_id: int):
         self.token = token
@@ -11,11 +8,9 @@ class TelegramNotifier:
         self.url = f"https://api.telegram.org/bot{self.token}/sendMessage"
         self.session = None
         self._lock = asyncio.Lock()
-
     async def _ensure(self):
         if self.session is None:
             self.session = aiohttp.ClientSession()
-
     async def send(self, text: str):
         await self._ensure()
         payload = {"chat_id": self.chat_id, "text": text}
@@ -27,7 +22,6 @@ class TelegramNotifier:
                         log.warning(f"[TELEGRAM] non-200 {resp.status}: {data}")
         except Exception as e:
             log.exception(f"[TELEGRAM] send failed: {e}")
-
     async def close(self):
         if self.session:
             await self.session.close()
