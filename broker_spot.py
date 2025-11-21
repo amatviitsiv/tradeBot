@@ -1,4 +1,3 @@
-# broker_spot.py
 import logging, time
 from typing import Dict, Optional
 from asyncio import sleep as async_sleep
@@ -22,7 +21,6 @@ class PaperSpotBroker:
         return dict(self.balances)
 
     def get_equity(self, market_prices: Dict[str, float]) -> float:
-        # IMPORTANT: this method must exist — manager.py calls it in paper mode
         eq = 0.0
         for asset, amt in self.balances.items():
             if amt == 0:
@@ -114,7 +112,6 @@ class PaperSpotBroker:
         pnl_usdt = (float(last_price) - avg_entry) * qty
         pnl_pct = (float(last_price) / avg_entry - 1) * 100.0
         return {"usdt": pnl_usdt, "pct": pnl_pct}
-
 
 class LiveSpotBroker:
     def __init__(self, client: AsyncClient):

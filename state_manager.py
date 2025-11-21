@@ -1,4 +1,3 @@
-# same as before (duplicate kept for safety)
 import config as cfg
 from utils import save_state, load_state
 import time

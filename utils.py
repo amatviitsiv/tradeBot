@@ -25,6 +25,7 @@ def split_symbol(symbol: str) -> Tuple[Optional[str], Optional[str]]:
     return None, None
 
 def round_down(value: float, step: Optional[float]) -> float:
+    import math
     if not step or step == 0:
         return value
     precision = max(0, int(round(-math.log10(step))))

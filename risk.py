@@ -1,4 +1,3 @@
-# risk.py
 import config as cfg
 
 class RiskManager:
