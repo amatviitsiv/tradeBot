@@ -1,44 +1,99 @@
-import math, json, os
-from typing import Tuple, Optional
+# utils.py
+import aiohttp
+import math
+import logging
 import pandas as pd
+import asyncio
+import time
 
-async def fetch_klines_async(client, symbol: str, interval: str, limit: int = 500) -> pd.DataFrame:
-    raw = await client.get_klines(symbol=symbol, interval=interval, limit=limit)
-    df = pd.DataFrame(raw, columns=[
-        "open_time","open","high","low","close","volume",
-        "close_time","quote_asset_volume","num_trades",
-        "taker_buy_base","taker_buy_quote","ignore"
-    ])
-    df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
-    for col in ["open","high","low","close","volume"]:
-        df[col] = df[col].astype(float)
+import config as cfg
+
+
+logger = logging.getLogger(__name__)
+
+
+# ========== ОКРУГЛЕНИЕ ДО ШАГА БИРЖИ ==========
+
+def round_step(value: float, step: float) -> float:
+    """
+    Округляет значение value к шагу step.
+    Пример: step=0.0001 → цена округляется правильно.
+    """
+    if step <= 0:
+        return value
+    return math.floor(value / step) * step
+
+
+def round_down(value: float, decimals: int) -> float:
+    """
+    Жёсткое округление вниз до decimals знаков.
+    """
+    factor = 10 ** decimals
+    return math.floor(value * factor) / factor
+
+
+# ========== ПОЛУЧЕНИЕ СВЕЧЕЙ (KLINES) через aiohttp ==========
+
+async def fetch_klines_async(client, symbol: str, interval: str, limit: int = 300):
+    """
+    Асинхронное получение свечей Binance через официальный клиент AsyncClient.
+    Возвращает pandas.DataFrame с float-значениями.
+    """
+    try:
+        raw = await client.get_klines(symbol=symbol, interval=interval, limit=limit)
+    except Exception as e:
+        logger.exception(f"[UTILS] Error fetching klines {symbol}: {e}")
+        raise
+
+    # Преобразуем в DataFrame
+    cols = [
+        "open_time", "open", "high", "low", "close",
+        "volume", "close_time", "quote_av", "trades",
+        "tb_base_av", "tb_quote_av", "ignore"
+    ]
+
+    df = pd.DataFrame(raw, columns=cols)
+    df["open"] = df["open"].astype(float)
+    df["high"] = df["high"].astype(float)
+    df["low"] = df["low"].astype(float)
+    df["close"] = df["close"].astype(float)
+    df["volume"] = df["volume"].astype(float)
+
     return df
 
-def split_symbol(symbol: str) -> Tuple[Optional[str], Optional[str]]:
-    common_quotes = ["USDT", "BUSD", "USDC", "BTC", "ETH", "BNB"]
-    for q in common_quotes:
-        if symbol.endswith(q) and len(symbol) > len(q):
-            return symbol[:-len(q)], q
-    if len(symbol) >= 6:
-        mid = len(symbol) // 2
-        return symbol[:mid], symbol[mid:]
-    return None, None
 
-def round_down(value: float, step: Optional[float]) -> float:
-    import math
-    if not step or step == 0:
-        return value
-    precision = max(0, int(round(-math.log10(step))))
-    return float(round(math.floor(value / step) * step, precision))
+# ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 
-def save_state(path: str, state: dict):
-    tmp = path + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(state, f, indent=2)
-    os.replace(tmp, path)
+def calc_notional(price: float, qty: float) -> float:
+    """Считает итоговый размер позиции."""
+    return price * qty
 
-def load_state(path: str) -> dict:
-    if not os.path.exists(path):
-        return {}
-    with open(path, "r") as f:
-        return json.load(f)
+
+def safe_float(v):
+    """Безопасная конвертация строки/числа в float."""
+    try:
+        return float(v)
+    except:
+        return 0.0
+
+
+async def sleep_corrected(start_time, target_interval):
+    """
+    Ждём остаток времени так, чтобы цикл работал равномерно.
+    """
+    elapsed = time.time() - start_time
+    to_wait = max(0.0, target_interval - elapsed)
+    await asyncio.sleep(to_wait)
+
+
+# ========== ЛОГИРОВАНИЕ СДЕЛОК В ФАЙЛ ==========
+def log_trade(message: str):
+    """Запись трейдов в отдельный файл."""
+    with open(cfg.TRADES_LOG_FILE, "a") as f:
+        f.write(message + "\n")
+
+
+def log_error(message: str):
+    """Запись ошибок в отдельный файл."""
+    with open(cfg.ERROR_LOG_FILE, "a") as f:
+        f.write(message + "\n")

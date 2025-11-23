@@ -1,27 +1,35 @@
-import logging, sys
+import logging
 from logging.handlers import RotatingFileHandler
-import config as cfg
 
-def setup_logging():
-    root = logging.getLogger()
-    root.setLevel(logging.INFO)
-    fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
-    ch = logging.StreamHandler(sys.stdout)
-    ch.setFormatter(fmt)
-    root.addHandler(ch)
-    fh = RotatingFileHandler(cfg.LOG_FILE, maxBytes=cfg.LOG_MAX_BYTES, backupCount=cfg.LOG_BACKUP_COUNT)
-    fh.setFormatter(fmt)
-    root.addHandler(fh)
-    th = RotatingFileHandler(cfg.TRADES_LOG_FILE, maxBytes=cfg.LOG_MAX_BYTES, backupCount=cfg.LOG_BACKUP_COUNT)
-    th.setFormatter(fmt)
-    trades_logger = logging.getLogger("trades")
-    trades_logger.setLevel(logging.INFO)
-    trades_logger.addHandler(th)
-    eh = RotatingFileHandler(cfg.ERROR_LOG_FILE, maxBytes=cfg.LOG_MAX_BYTES, backupCount=cfg.LOG_BACKUP_COUNT)
-    eh.setFormatter(fmt)
-    errors_logger = logging.getLogger("errors")
-    errors_logger.setLevel(logging.WARNING)
-    errors_logger.addHandler(eh)
-    return root
 
-logger = setup_logging()
+def setup_logger(name, log_file, level=logging.INFO):
+    formatter = logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
+
+    # файл (ротируемый)
+    file_handler = RotatingFileHandler(
+        log_file,
+        maxBytes=5_000_000,
+        backupCount=5,
+        encoding="utf-8"
+    )
+    file_handler.setFormatter(formatter)
+    file_handler.setLevel(level)
+
+    # консоль
+    console = logging.StreamHandler()
+    console.setFormatter(formatter)
+    console.setLevel(level)
+
+    # создаём логгер
+    logger = logging.getLogger(name)
+    logger.setLevel(level)
+
+    # чтобы не дублировал, чистим хендлеры
+    if not logger.handlers:
+        logger.addHandler(file_handler)
+        logger.addHandler(console)
+
+    # запрещаем всплытие к root
+    logger.propagate = False
+
+    return logger

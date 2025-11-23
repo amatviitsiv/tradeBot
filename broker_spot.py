@@ -1,204 +1,172 @@
-import logging, time
-from typing import Dict, Optional
-from asyncio import sleep as async_sleep
-from binance import AsyncClient
+# broker_spot.py
+
+import logging
 import config as cfg
-from utils import split_symbol, round_down
+from utils import round_down, log_trade
+from math import floor
 
 logger = logging.getLogger(__name__)
-trades_logger = logging.getLogger("trades")
-errors_logger = logging.getLogger("errors")
+
+
+# ======================================================================
+#                           PAPER SPOT BROKER
+# ======================================================================
 
 class PaperSpotBroker:
-    def __init__(self, starting_balance_usdt: float = cfg.INITIAL_BALANCE_USDT):
-        self.balances: Dict[str, float] = {"USDT": float(starting_balance_usdt)}
-        self.history = []
+    """
+    Полная симуляция спотовой торговли:
+    - баланс в USDT
+    - покупки/продажи SPOT
+    - комиссия
+    - PnL
+    """
 
-    def get_balance(self, asset: str) -> float:
-        return float(self.balances.get(asset, 0.0))
+    def __init__(self, initial_balance_usdt: float):
+        self.balances = {"USDT": float(initial_balance_usdt)}
+        self.positions = {}  # { "BTCUSDT": {"qty":..., "avg_price":...} }
+        logger.info(f"[PAPER_SPOT] initialized with {initial_balance_usdt:.2f} USDT")
 
-    def get_balances(self) -> Dict[str, float]:
-        return dict(self.balances)
+    # ------------------------------------------------------------------
+    def get_equity(self, market_prices: dict) -> float:
+        """Считает equity только для СПОТА."""
+        equity = self.balances.get("USDT", 0.0)
 
-    def get_equity(self, market_prices: Dict[str, float]) -> float:
-        eq = 0.0
-        for asset, amt in self.balances.items():
-            if amt == 0:
+        for symbol, pos in self.positions.items():
+            if symbol not in market_prices:
                 continue
-            if asset == "USDT":
-                eq += amt
-            else:
-                sym = asset + "USDT"
-                px = market_prices.get(sym)
-                if px is not None:
-                    eq += amt * px
-                else:
-                    logger.debug(f"[PAPER-SPOT] no price for {asset} ({sym}), skipping")
-        logger.info(f"[EQUITY] {eq:.2f} USDT")
-        return eq
+            last = market_prices[symbol]
+            equity += pos["qty"] * last
 
-    def _record(self, rec: Dict):
-        for k, v in list(rec.items()):
-            if hasattr(v, "item"):
-                try:
-                    rec[k] = float(v)
-                except Exception:
-                    pass
-        rec["ts"] = time.time()
-        self.history.append(rec)
-        trades_logger.info(rec)
+        return equity
 
-    def create_market_order(self, symbol: str, side: str, qty: float, price: float) -> Optional[Dict]:
-        side = side.upper()
-        base, quote = split_symbol(symbol)
-        if base is None or quote is None:
-            errors_logger.error(f"[PAPER-SPOT] bad symbol {symbol}")
+    # ------------------------------------------------------------------
+    def get_pnl(self, symbol: str, last_price: float):
+        """Расчёт PnL по спотовой позиции."""
+        if symbol not in self.positions:
             return None
 
-        qty = float(qty)
-        price = float(price)
-        notional = qty * price
+        pos = self.positions[symbol]
+        entry = pos["avg_price"]
+        qty = pos["qty"]
 
-        if not cfg.USE_BNB_FEES:
-            fee = notional * cfg.PAPER_TAKER_FEE
-        else:
-            fee = notional * cfg.PAPER_TAKER_FEE
+        pnl_usdt = (last_price - entry) * qty
+        pct = (pnl_usdt / (entry * qty)) * 100 if qty > 0 else 0
+
+        return {
+            "usdt": pnl_usdt,
+            "pct": pct
+        }
+
+    # ------------------------------------------------------------------
+    def create_market_order(self, symbol: str, side: str, qty: float, price: float):
+        """
+        Исполнение рыночного ордера.
+        side = "BUY" / "SELL"
+        qty  = количество монет
+        price = текущая цена
+        """
+        fee_rate = cfg.SPOT_FEE_RATE
 
         if side == "BUY":
-            total_cost = notional + fee
-            available = self.get_balance(quote)
-            if available + 1e-9 < total_cost:
-                logger.warning(f"[PAPER-SPOT] insufficient {quote} ({available} < {total_cost})")
-                return None
-            self.balances[quote] = round(float(self.balances.get(quote, 0.0)) - total_cost, 12)
-            self.balances[base] = round(float(self.balances.get(base, 0.0)) + qty, 12)
-            rec = {"side": "BUY", "symbol": symbol, "qty": float(qty), "price": float(price), "notional": float(notional), "fee": float(fee)}
-            self._record(rec)
-            logger.info(f"[PAPER-SPOT] BUY {symbol} {qty:.8f} @ {price:.2f} cost={total_cost:.2f} fee={fee:.6f}")
-            return rec
+            cost = qty * price
+            fee = cost * fee_rate
+            total = cost + fee
 
+            if self.balances["USDT"] < total:
+                logger.warning(f"[PAPER-SPOT] insufficient USDT for BUY {symbol}")
+                return None
+
+            # списываем деньги
+            self.balances["USDT"] -= total
+
+            # увеличиваем позицию
+            if symbol not in self.positions:
+                self.positions[symbol] = {"qty": qty, "avg_price": price}
+            else:
+                pos = self.positions[symbol]
+                new_qty = pos["qty"] + qty
+                new_avg = (pos["avg_price"] * pos["qty"] + qty * price) / new_qty
+                pos["qty"] = new_qty
+                pos["avg_price"] = new_avg
+
+            msg = f"[PAPER-SPOT] BUY {symbol} {qty:.8f} @ {price} cost={total:.2f} fee={fee:.4f}"
+            logger.info(msg)
+            log_trade(msg)
+            return {"side": "BUY", "symbol": symbol, "qty": qty, "price": price}
+
+        # ------------------------------------------------------------------
         elif side == "SELL":
-            pos_qty = self.get_balance(base)
-            if pos_qty + 1e-9 < qty:
-                logger.warning(f"[PAPER-SPOT] insufficient {base} to SELL ({pos_qty} < {qty})")
+            if symbol not in self.positions or self.positions[symbol]["qty"] < qty:
+                logger.warning(f"[PAPER-SPOT] insufficient {symbol} qty for SELL")
                 return None
-            proceeds = qty * price
-            fee = proceeds * cfg.PAPER_TAKER_FEE
-            net = proceeds - fee
-            self.balances[base] = round(float(self.balances.get(base, 0.0)) - qty, 12)
-            self.balances[quote] = round(float(self.balances.get(quote, 0.0)) + net, 12)
-            rec = {"side": "SELL", "symbol": symbol, "qty": float(qty), "price": float(price), "proceeds": float(proceeds), "fee": float(fee), "net": float(net)}
-            self._record(rec)
-            logger.info(f"[PAPER-SPOT] SELL {symbol} {qty:.8f} @ {price:.2f} net={net:.2f} fee={fee:.6f}")
-            return rec
-        else:
-            raise ValueError("side must be BUY or SELL")
 
-    def get_pnl(self, symbol: str, last_price: float) -> Optional[Dict]:
-        base, quote = split_symbol(symbol)
-        if base is None:
-            return None
-        qty = self.get_balance(base)
-        if qty <= 0:
-            return None
-        buys = [h for h in self.history if h.get("symbol") == symbol and h.get("side") == "BUY"]
-        if not buys:
-            return None
-        total_qty = sum(float(b["qty"]) for b in buys)
-        if total_qty == 0:
-            return None
-        total_cost = sum(float(b["qty"]) * float(b["price"]) + float(b.get("fee", 0.0)) for b in buys)
-        avg_entry = total_cost / total_qty
-        pnl_usdt = (float(last_price) - avg_entry) * qty
-        pnl_pct = (float(last_price) / avg_entry - 1) * 100.0
-        return {"usdt": pnl_usdt, "pct": pnl_pct}
+            pos = self.positions[symbol]
+            proceeds = qty * price
+            fee = proceeds * fee_rate
+            net = proceeds - fee
+
+            # увеличиваем USDT
+            self.balances["USDT"] += net
+
+            # уменьшаем позицию
+            pos["qty"] -= qty
+            if pos["qty"] <= 0:
+                del self.positions[symbol]
+
+            msg = f"[PAPER-SPOT] SELL {symbol} {qty:.8f} @ {price} net={net:.2f} fee={fee:.4f}"
+            logger.info(msg)
+            log_trade(msg)
+            return {"side": "SELL", "symbol": symbol, "qty": qty, "price": price}
+
+
+# ======================================================================
+#                           LIVE SPOT BROKER
+# ======================================================================
 
 class LiveSpotBroker:
-    def __init__(self, client: AsyncClient):
+    """
+    Реальный спотовый брокер через Binance API.
+    Минимальный функционал для безопасности:
+    - маркет-ордера BUY/SELL
+    - обновление балансов
+    """
+
+    def __init__(self, client):
         self.client = client
-        self._symbol_info = {}
-        self._exchange_info = None
-        self._balances = {}
 
-    async def init(self):
-        if self._exchange_info is None:
-            self._exchange_info = await self.client.get_exchange_info()
-            for s in self._exchange_info.get("symbols", []):
-                info = {"stepSize": None, "tickSize": None, "minQty": None, "minNotional": None, "baseAsset": s.get("baseAsset"), "quoteAsset": s.get("quoteAsset")}
-                for f in s.get("filters", []):
-                    if f.get("filterType") == "LOT_SIZE":
-                        info["stepSize"] = float(f.get("stepSize", "0"))
-                        info["minQty"] = float(f.get("minQty", "0"))
-                    if f.get("filterType") == "PRICE_FILTER":
-                        info["tickSize"] = float(f.get("tickSize", "0"))
-                    if f.get("filterType") == "MIN_NOTIONAL":
-                        info["minNotional"] = float(f.get("minNotional", "0"))
-                self._symbol_info[s["symbol"]] = info
-        await self.update_balances()
-
+    # ------------------------------------------------------------------
     async def update_balances(self):
-        acct = await self.client.get_account()
-        self._balances = {b["asset"]: float(b["free"]) for b in acct.get("balances", []) if float(b.get("free", 0.0)) > 0.0}
-        return self._balances
+        """Получить реальные балансы аккаунта."""
+        acc = await self.client.get_account()
+        bals = {}
 
-    def get_balance(self, asset: str) -> float:
-        return float(self._balances.get(asset, 0.0))
+        for b in acc["balances"]:
+            free = float(b["free"])
+            locked = float(b["locked"])
+            if free + locked > 0:
+                bals[b["asset"]] = free + locked
 
-    def _round_qty(self, symbol: str, qty: float) -> float:
-        info = self._symbol_info.get(symbol, {})
-        step = info.get("stepSize")
-        if step:
-            return round_down(qty, step)
-        return qty
+        return bals
 
-    async def create_market_order(self, symbol: str, side: str, qty: float, price: float = None) -> Optional[Dict]:
-        if not self._symbol_info:
-            await self.init()
-        info = self._symbol_info.get(symbol)
-        if not info:
-            raise ValueError(f"No symbol info for {symbol}")
+    # ------------------------------------------------------------------
+    async def create_market_order(self, symbol: str, side: str, qty: float, price: float = None):
+        """
+        Создаёт реальный маркет-ордер.
+        Для безопасности:
+        - qty округляется
+        - нет OCO, только маркет
+        """
+        try:
+            res = await self.client.create_order(
+                symbol=symbol,
+                side=side,
+                type="MARKET",
+                quantity=qty
+            )
+            logger.info(f"[LIVE-SPOT] {side} {symbol} {qty:.8f}")
+            log_trade(f"[LIVE-SPOT] {side} {symbol} {qty:.8f}")
+            return res
 
-        if price is None:
-            ticker = await self.client.get_symbol_ticker(symbol=symbol)
-            price = float(ticker.get("price"))
-
-        qty = float(qty)
-        qty = self._round_qty(symbol, qty)
-        if qty <= 0:
-            raise ValueError("Rounded qty <= 0")
-
-        min_qty = info.get("minQty") or 0.0
-        if min_qty and qty < min_qty:
-            adj = self._round_qty(symbol, min_qty * 1.01)
-            logger.warning(f"[LIVE-SPOT] {symbol} qty {qty} < minQty {min_qty}, adjusted -> {adj}")
-            qty = adj
-
-        min_notional = info.get("minNotional") or 0.0
-        notional = qty * price
-        if min_notional and notional < min_notional:
-            min_qty_for_not = (min_notional / price) * 1.01
-            adj = self._round_qty(symbol, max(qty, min_qty_for_not))
-            logger.warning(f"[LIVE-SPOT] {symbol} notional {notional:.2f} < minNotional {min_notional}, adjusted qty -> {adj}")
-            qty = adj
-
-        base = info.get("baseAsset")
-        if side.upper() == "SELL":
-            bal = self.get_balance(base)
-            if bal < qty:
-                logger.error(f"[LIVE-SPOT] Not enough {base} to SELL ({bal} < {qty})")
-                return None
-
-        last_exc = None
-        for attempt in range(cfg.ORDER_RETRY):
-            try:
-                res = await self.client.create_order(symbol=symbol, side=side.upper(), type="MARKET", quantity=qty)
-                await async_sleep(0.2)
-                await self.update_balances()
-                logger.info(f"[LIVE-SPOT] {side.upper()} {symbol} qty={qty:.8f}")
-                trades_logger.info({"side": side.upper(), "symbol": symbol, "qty": qty, "price": price})
-                return res
-            except Exception as e:
-                last_exc = e
-                errors_logger.warning(f"[LIVE-SPOT] order attempt {attempt+1} failed: {e}")
-                await async_sleep(cfg.ORDER_RETRY_DELAY)
-        raise last_exc
+        except Exception as e:
+            logger.error(f"[LIVE-SPOT] Order error: {e}")
+            return None

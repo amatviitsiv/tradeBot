@@ -1,50 +1,65 @@
-import config as cfg
-from utils import save_state, load_state
-import time
+# state_manager.py
 
-DEFAULT = {
-    "positions": {},
-    "equity": cfg.INITIAL_BALANCE_USDT,
-    "last_update": None,
-    "trade_counts": {}
-}
+import json
+import os
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 class StateManager:
-    def __init__(self, path=cfg.STATE_FILE):
-        self.path = path
-        s = load_state(self.path)
-        self.state = s if s else DEFAULT.copy()
-        for k in DEFAULT:
-            if k not in self.state:
-                self.state[k] = DEFAULT[k]
-        if self.state.get("last_update") is None:
-            self.state["last_update"] = time.time()
+    """
+    Управляет файлом состояния:
+    - сохраняет открытые позиции
+    - загружает состояние при старте бота
+    """
 
+    def __init__(self, state_file: str):
+        self.state_file = state_file
+        self.data = {
+            "positions": {}
+        }
+
+    # ----------------------------------------------------------------------
+    def load(self):
+        """Загружает состояние из JSON-файла."""
+        if not os.path.exists(self.state_file):
+            logger.info(f"[STATE] No state file found, starting fresh.")
+            return
+
+        try:
+            with open(self.state_file, "r") as f:
+                self.data = json.load(f)
+            logger.info(f"[STATE] Loaded: {self.state_file}")
+        except Exception as e:
+            logger.error(f"[STATE] Failed to load {self.state_file}: {e}")
+            self.data = {"positions": {}}
+
+    # ----------------------------------------------------------------------
     def save(self):
-        self.state["last_update"] = time.time()
-        save_state(self.path, self.state)
+        """Сохраняет состояние (позиции) в JSON-файл."""
+        try:
+            with open(self.state_file, "w") as f:
+                json.dump(self.data, f, indent=4)
+            logger.info(f"[STATE] Saved: {self.state_file}")
+        except Exception as e:
+            logger.error(f"[STATE] Failed to save state: {e}")
 
+    # ----------------------------------------------------------------------
     def get_positions(self):
-        return self.state.get("positions", {})
+        """Возвращает словарь позиций."""
+        return self.data.get("positions", {})
 
-    def set_position(self, symbol, posdict):
-        self.state.setdefault("positions", {})
-        self.state["positions"][symbol] = posdict
+    # ----------------------------------------------------------------------
+    def set_position(self, symbol: str, pos_dict: dict):
+        """Добавляет или обновляет позицию."""
+        self.data.setdefault("positions", {})
+        self.data["positions"][symbol] = pos_dict
         self.save()
 
-    def del_position(self, symbol):
-        if "positions" in self.state and symbol in self.state["positions"]:
-            del self.state["positions"][symbol]
+    # ----------------------------------------------------------------------
+    def del_position(self, symbol: str):
+        """Удаляет позицию при закрытии."""
+        if symbol in self.data.get("positions", {}):
+            del self.data["positions"][symbol]
             self.save()
-
-    def set_equity(self, eq):
-        self.state["equity"] = eq
-        self.save()
-
-    def incr_trade_count(self, symbol):
-        tc = self.state.setdefault("trade_counts", {})
-        tc[symbol] = tc.get(symbol, 0) + 1
-        self.save()
-
-    def get_trade_count(self, symbol):
-        return self.state.get("trade_counts", {}).get(symbol, 0)
