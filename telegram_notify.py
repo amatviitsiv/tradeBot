@@ -1,28 +1,59 @@
-import aiohttp, asyncio, logging
+# telegram_notify.py
+
+import aiohttp
+import asyncio
+import logging
 import config as cfg
-log = logging.getLogger(__name__)
+
+logger = logging.getLogger(__name__)
+
+
 class TelegramNotifier:
-    def __init__(self, token: str, chat_id: int):
+    """
+    Простая асинхронная отправка сообщений в Telegram.
+    Работает даже в PAPER режиме.
+    Не падает при ошибках (только логирует).
+    """
+
+    def __init__(self, token: str, chat_id: str):
         self.token = token
         self.chat_id = chat_id
-        self.url = f"https://api.telegram.org/bot{self.token}/sendMessage"
+        self.api_url = f"https://api.telegram.org/bot{token}/sendMessage"
         self.session = None
-        self._lock = asyncio.Lock()
-    async def _ensure(self):
+
+    # --------------------------------------------------------------
+
+    async def start(self):
+        """Инициализация http-сессии."""
         if self.session is None:
             self.session = aiohttp.ClientSession()
+
+    # --------------------------------------------------------------
+
     async def send(self, text: str):
-        await self._ensure()
-        payload = {"chat_id": self.chat_id, "text": text}
+        """Отправляет сообщение, если token/chat_id заданы."""
+        if not self.token or not self.chat_id:
+            return  # уведомления отключены
+
+        if self.session is None:
+            await self.start()
+
+        payload = {
+            "chat_id": self.chat_id,
+            "text": text
+        }
+
         try:
-            async with self._lock:
-                async with self.session.post(self.url, json=payload, timeout=10) as resp:
-                    if resp.status != 200:
-                        data = await resp.text()
-                        log.warning(f"[TELEGRAM] non-200 {resp.status}: {data}")
+            async with self.session.post(self.api_url, json=payload, timeout=5) as resp:
+                if resp.status != 200:
+                    logger.warning(f"[TG] send failed: {resp.status}")
         except Exception as e:
-            log.exception(f"[TELEGRAM] send failed: {e}")
+            logger.warning(f"[TG] error: {e}")
+
+    # --------------------------------------------------------------
+
     async def close(self):
+        """Закрытие сессии."""
         if self.session:
             await self.session.close()
             self.session = None
