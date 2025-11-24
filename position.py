@@ -11,35 +11,44 @@ class PositionState:
     - futures short режим (mode="futures")
     """
 
-    def __init__(self, symbol, entry_price, qty, notional, mode="spot"):
-        self.symbol = symbol                  # BTCUSDT
-        self.entry_price = float(entry_price) # цена входа
-        self.qty = float(qty)                 # кол-во актива
-        self.notional = float(notional)       # стоимость позиции
-        self.mode = mode                      # spot / futures
-        self.open_time = time.time()          # timestamp открытия
-
-        # Трейлинг-логика
-        self.peak_price = entry_price         # максимум после входа
-        self.trailing_stop = None             # будет активирован позже
+    def __init__(
+        self,
+        symbol: str,
+        entry_price: float,
+        qty: float,
+        notional: float,
+        mode: str = "spot",
+        open_time: float = None,
+        peak_price: float = None,
+        trailing_stop: float = None,
+        pyramid_level: int = 0,
+    ):
+        self.symbol = symbol
+        self.entry_price = entry_price
+        self.qty = qty
+        self.notional = notional
+        self.mode = mode  # "spot" или "futures"
+        self.open_time = open_time or time.time()
+        self.peak_price = peak_price if peak_price is not None else entry_price
+        self.trailing_stop = trailing_stop
+        self.pyramid_level = pyramid_level
 
     # ------------------------------------------------------------------
-    def update_peak(self, last_price):
-        """Обновляет максимальную цену движения (peak)."""
-        if last_price > self.peak_price:
+    def update_peak(self, last_price: float):
+        if last_price > (self.peak_price or self.entry_price):
             self.peak_price = last_price
 
     # ------------------------------------------------------------------
-    def current_stop(self, static_stop_pct):
+    def current_stop(self, stop_loss_pct: float) -> float:
         """
-        Возвращает текущий уровнь стопа:
-        - если трейлинг активирован → трейлинг-стоп
-        - иначе статический стоп-лосс
+        Возвращает актуальный стоп:
+        - либо фиксированный от entry_price
+        - либо trailing_stop, если он уже "вооружён"
         """
-        if self.trailing_stop is not None:
-            return self.trailing_stop
-
-        return self.entry_price * (1 - static_stop_pct)
+        base_sl = self.entry_price * (1 - stop_loss_pct)
+        if self.trailing_stop is None:
+            return base_sl
+        return max(base_sl, self.trailing_stop)
 
     # ------------------------------------------------------------------
     def to_dict(self):
@@ -53,23 +62,40 @@ class PositionState:
             "open_time": self.open_time,
             "peak_price": self.peak_price,
             "trailing_stop": self.trailing_stop,
+            "pyramid_level": self.pyramid_level,
         }
+
+    def add_layer(self, price: float, qty_add: float, notional_add: float):
+        """
+        Smart re-entry: добавляем объём по новой цене,
+        пересчитываем среднюю цену входа.
+        """
+        total_notional_before = self.entry_price * self.qty
+        total_notional_after = total_notional_before + notional_add
+        total_qty_after = self.qty + qty_add
+
+        if total_qty_after > 0:
+            self.entry_price = total_notional_after / total_qty_after
+
+        self.qty = total_qty_after
+        self.notional += notional_add
+        # пирамидальный уровень увеличиваем
+        self.pyramid_level += 1
 
     # ------------------------------------------------------------------
     @classmethod
-    def from_dict(cls, data: dict):
-        """Десериализация позиции при загрузке из state файла."""
-        obj = cls(
-            symbol=data["symbol"],
-            entry_price=data["entry_price"],
-            qty=data["qty"],
-            notional=data["notional"],
-            mode=data.get("mode", "spot"),
+    def from_dict(cls, d: dict):
+        return cls(
+            symbol=d["symbol"],
+            entry_price=d["entry_price"],
+            qty=d["qty"],
+            notional=d["notional"],
+            mode=d.get("mode", "spot"),
+            open_time=d.get("open_time"),
+            peak_price=d.get("peak_price"),
+            trailing_stop=d.get("trailing_stop"),
+            pyramid_level=d.get("pyramid_level", 0),
         )
-        obj.open_time = data.get("open_time", time.time())
-        obj.peak_price = data.get("peak_price", obj.entry_price)
-        obj.trailing_stop = data.get("trailing_stop", None)
-        return obj
 
     # ------------------------------------------------------------------
     def __repr__(self):

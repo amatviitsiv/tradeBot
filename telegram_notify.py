@@ -30,6 +30,12 @@ class TelegramNotifier:
 
     # --------------------------------------------------------------
 
+    async def send_equity(self, equity: float):
+        """
+        Отдельный метод для уведомления по equity, чтобы удобно вызывать из manager.
+        """
+        await self.send(f"Equity: {equity:.2f} USDT")
+
     async def send(self, text: str):
         """Отправляет сообщение, если token/chat_id заданы."""
         if not self.token or not self.chat_id:

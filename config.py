@@ -12,6 +12,7 @@
 # True  = реальная торговля (нужны ключи и аккуратность!)
 REAL_TRADING = False
 
+EQUITY_NOTIFY_INTERVAL = 600
 # API ключи для Binance (заполняешь ТОЛЬКО если REAL_TRADING = True)
 API_KEY = "kpE6FHApowcp7kD0ji3FBrSqFJM674mF5Idm87K8cxRPulLA1NdziRd3rJKTpqa1"
 API_SECRET = "fSBKFMPQ2M4DWUGBZhK4xYOvrc7QfKOashAw9eXk6dhLElDh71h4KCe2kYHuVI0c"
@@ -92,3 +93,22 @@ ADX_TREND_THRESHOLD = 20  # тренд считается сильным, есл
 # Ограничение сделок по тренду:
 # - buy только если цена > SMA200 и EMA_FAST > EMA_SLOW и ADX >= порога
 # - sell только если цена < SMA200 и EMA_FAST < EMA_SLOW и ADX >= порога
+# === Anti-chop / trend filters ===
+
+# ADX порог для "сильного тренда"
+ADX_TREND_THRESHOLD = 20.0          # было уже, можно поднять до 25–30 если шумно
+
+# Минимальная волатильность (ATR) относительно цены,
+# чтобы вообще считать рынок пригодным для входа
+ANTI_CHOP_MIN_ATR_PCT = 0.002       # 0.2% от цены, можно играться
+
+# === Smart re-entry (пирамида) ===
+
+# Максимальное количество добавочных входов поверх первой позиции
+PYRAMID_MAX_LAYERS = 2              # напр: 0 = отключено, 1–3 = разумно
+
+# На сколько % цена должна уйти против позиции, чтобы сделать ДО-вход
+PYRAMID_STEP_PCT = 0.015            # 1.5% против нас -> догон
+
+# Размер каждого добавочного входа относительно исходного notional
+PYRAMID_SCALE = 0.5                 # 0.5 = каждый догон на половину первоначального объёма
